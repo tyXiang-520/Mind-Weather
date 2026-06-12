@@ -1,0 +1,11 @@
+node_modules/
+target/
+dist/
+*.mv.db
+*.trace.db
+data/
+.DS_Store
+Thumbs.db
+NJUmap.glb
+MindWeather.zip
+/tmp/
