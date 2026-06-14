@@ -11,6 +11,9 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { createLogger } from '../utils/debug.js'
+
+const log = createLogger('Map2D')
 
 const props = defineProps({
   /** { buildingName: 'sunny'|'cloudy'|... }  */
@@ -178,6 +181,7 @@ const WEATHER_EMOJI = {
 
 // ═══════════ Canvas 渲染 ═══════════
 let animationId, hoveredBuilding = null
+let isAnimating = false
 
 const MAP_W = 520  // Canvas 内部坐标宽
 const MAP_H = 560  // Canvas 内部坐标高
@@ -185,6 +189,7 @@ const MAP_H = 560  // Canvas 内部坐标高
 function draw() {
   const canvas = canvasRef.value
   if (!canvas) return
+  log.log('draw', { buildingCount: Object.keys(props.buildingWeathers).length, hovered: hoveredBuilding })
   const ctx = canvas.getContext('2d')
   const dpr = Math.min(window.devicePixelRatio, 2)
   const rect = canvas.parentElement.getBoundingClientRect()
@@ -293,13 +298,19 @@ function getBuildingAt(clientX, clientY) {
 
 function onMouseMove(e) {
   const b = getBuildingAt(e.clientX, e.clientY)
-  hoveredBuilding = b ? b.name : null
+  if (b?.name !== hoveredBuilding) {
+    hoveredBuilding = b ? b.name : null
+    log.log('hover', { building: hoveredBuilding })
+  }
 }
 
 function onClick(e) {
   const b = getBuildingAt(e.clientX, e.clientY)
   if (b) {
+    log.log('建筑点击', { name: b.name, weather: props.buildingWeathers[b.name] })
     emit('buildingClick', { name: b.name, weather: props.buildingWeathers[b.name] })
+  } else {
+    log.log('点击空白区域')
   }
 }
 
@@ -307,22 +318,39 @@ function onResize() {
   draw()
 }
 
+function startAnimation() {
+  if (isAnimating) return
+  isAnimating = true
+  animationId = requestAnimationFrame(function loop() {
+    // v-show 隐藏时跳过渲染
+    if (containerRef.value && containerRef.value.clientWidth > 0) {
+      draw()
+    }
+    animationId = requestAnimationFrame(loop)
+  })
+}
+
+function stopAnimation() {
+  isAnimating = false
+  if (animationId) {
+    cancelAnimationFrame(animationId)
+    animationId = null
+  }
+}
+
 onMounted(() => {
   draw()
+  startAnimation()
   window.addEventListener('resize', onResize)
   const canvas = canvasRef.value
   if (canvas) {
     canvas.addEventListener('mousemove', onMouseMove)
     canvas.addEventListener('click', onClick)
   }
-  animationId = requestAnimationFrame(function loop() {
-    draw()
-    animationId = requestAnimationFrame(loop)
-  })
 })
 
 onBeforeUnmount(() => {
-  cancelAnimationFrame(animationId)
+  stopAnimation()
   window.removeEventListener('resize', onResize)
   const canvas = canvasRef.value
   if (canvas) {

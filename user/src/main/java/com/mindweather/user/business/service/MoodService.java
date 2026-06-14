@@ -14,6 +14,10 @@ public interface MoodService {
 
     void deletePost(Long userId, Long postId);
 
+    List<Map<String, Object>> getBuildingPosts(String buildingName, int page, int pageSize);
+
+    List<Map<String, Object>> getZonePosts(String zoneId, int page, int pageSize);
+
     String hashContent(String content);
 
     boolean isDuplicatePost(Long userId, String contentHash);

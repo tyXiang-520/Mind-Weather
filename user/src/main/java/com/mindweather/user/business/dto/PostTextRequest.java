@@ -24,4 +24,7 @@ public class PostTextRequest {
     /** 分区 ID，A-L */
     @NotBlank(message = "分区不能为空")
     private String zoneId;
+
+    /** 是否匿名投稿 */
+    private Boolean anonymous = false;
 }

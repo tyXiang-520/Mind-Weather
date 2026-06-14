@@ -9,3 +9,11 @@ Thumbs.db
 NJUmap.glb
 MindWeather.zip
 /tmp/
+*.log
+deploy/
+test/
+CLAUDE.md
+TASK-*.md
+*.iml
+.idea/
+.vscode/

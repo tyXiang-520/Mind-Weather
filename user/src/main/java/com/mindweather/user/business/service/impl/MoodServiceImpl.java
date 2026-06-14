@@ -1,5 +1,6 @@
 package com.mindweather.user.business.service.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindweather.user.business.config.ZoneConfig;
 import com.mindweather.user.business.dto.EmotionResultDTO;
 import com.mindweather.user.business.dto.PostTextRequest;
@@ -9,7 +10,11 @@ import com.mindweather.user.business.service.EmotionAnalysisService;
 import com.mindweather.user.business.service.MoodService;
 import com.mindweather.user.business.service.WeatherMappingService;
 import com.mindweather.user.entity.Post;
+import com.mindweather.user.entity.User;
 import com.mindweather.user.repository.PostRepository;
+import com.mindweather.user.repository.LikeRepository;
+import com.mindweather.user.repository.CommentRepository;
+import com.mindweather.user.repository.UserRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -27,17 +32,29 @@ public class MoodServiceImpl implements MoodService {
     private final EmotionAnalysisService emotionAnalysisService;
     private final WeatherMappingService weatherMappingService;
     private final ZoneConfig zoneConfig;
+    private final ObjectMapper objectMapper;
+    private final LikeRepository likeRepository;
+    private final CommentRepository commentRepository;
+    private final UserRepository userRepository;
 
     private static final int MAX_CONTENT_LENGTH = 500;
 
     public MoodServiceImpl(PostRepository postRepository,
                            EmotionAnalysisService emotionAnalysisService,
                            WeatherMappingService weatherMappingService,
-                           ZoneConfig zoneConfig) {
+                           ZoneConfig zoneConfig,
+                           ObjectMapper objectMapper,
+                           LikeRepository likeRepository,
+                           CommentRepository commentRepository,
+                           UserRepository userRepository) {
         this.postRepository = postRepository;
         this.emotionAnalysisService = emotionAnalysisService;
         this.weatherMappingService = weatherMappingService;
         this.zoneConfig = zoneConfig;
+        this.objectMapper = objectMapper;
+        this.likeRepository = likeRepository;
+        this.commentRepository = commentRepository;
+        this.userRepository = userRepository;
     }
 
     @Override
@@ -90,7 +107,12 @@ public class MoodServiceImpl implements MoodService {
         post.setZoneId(zoneId);
         post.setWeatherCode(weatherCode);
         post.setEmotionType(emotionType);
-        post.setTags(tags != null ? String.join(",", tags) : "");
+        post.setIsAnonymous(Boolean.TRUE.equals(request.getAnonymous()));
+        try {
+            post.setTags(tags != null ? objectMapper.writeValueAsString(tags) : "[]");
+        } catch (Exception e) {
+            post.setTags("[]");
+        }
         post.setCreatedAt(LocalDateTime.now());
         post.setIsDeleted(false);
 
@@ -114,23 +136,7 @@ public class MoodServiceImpl implements MoodService {
     public List<Map<String, Object>> getMyPosts(Long userId, int page, int pageSize) {
         List<Post> posts = postRepository.findByUserIdAndIsDeletedFalseOrderByCreatedAtDesc(
                 userId, PageRequest.of(page - 1, pageSize));
-
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Post post : posts) {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("postId", post.getId());
-            item.put("content", post.getContent());
-            item.put("buildingName", post.getBuildingName());
-            item.put("zoneId", post.getZoneId());
-            item.put("emotionType", post.getEmotionType());
-            item.put("weatherCode", post.getWeatherCode());
-            item.put("weatherIcon", getWeatherIcon(post.getWeatherCode()));
-            item.put("weatherName", getWeatherName(post.getWeatherCode()));
-            item.put("tags", post.getTags() != null ? List.of(post.getTags().split(",")) : List.of());
-            item.put("createdAt", post.getCreatedAt() != null ? post.getCreatedAt().toString() : "");
-            result.add(item);
-        }
-        return result;
+        return posts.stream().map(this::postToMap).toList();
     }
 
     @Override
@@ -146,6 +152,26 @@ public class MoodServiceImpl implements MoodService {
     }
 
     @Override
+    public List<Map<String, Object>> getBuildingPosts(String buildingName, int page, int pageSize) {
+        if (!zoneConfig.isValidBuilding(buildingName)) {
+            throw new IllegalArgumentException("无效的建筑名称: " + buildingName);
+        }
+        List<Post> posts = postRepository.findByBuildingNameAndIsDeletedFalseOrderByCreatedAtDesc(
+                buildingName, PageRequest.of(page - 1, pageSize));
+        return posts.stream().map(this::postToMap).toList();
+    }
+
+    @Override
+    public List<Map<String, Object>> getZonePosts(String zoneId, int page, int pageSize) {
+        if (zoneConfig.getZone(zoneId) == null) {
+            throw new IllegalArgumentException("无效的分区: " + zoneId);
+        }
+        List<Post> posts = postRepository.findByZoneIdAndIsDeletedFalseOrderByCreatedAtDesc(
+                zoneId, PageRequest.of(page - 1, pageSize));
+        return posts.stream().map(this::postToMap).toList();
+    }
+
+    @Override
     public String hashContent(String content) {
         // 防刷改为数据库查询实现，不再需要 hash
         return Integer.toHexString(content.hashCode());
@@ -157,9 +183,55 @@ public class MoodServiceImpl implements MoodService {
         return false;
     }
 
+    private Map<String, Object> postToMap(Post post) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("postId", post.getId());
+        item.put("content", post.getContent());
+        item.put("buildingName", post.getBuildingName());
+        item.put("zoneId", post.getZoneId());
+        item.put("emotionType", post.getEmotionType());
+        item.put("weatherCode", post.getWeatherCode());
+        item.put("weatherIcon", getWeatherIcon(post.getWeatherCode()));
+        item.put("weatherName", getWeatherName(post.getWeatherCode()));
+        item.put("tags", parseTags(post.getTags()));
+        item.put("createdAt", post.getCreatedAt() != null ? post.getCreatedAt().toString() : "");
+        item.put("likeCount", likeRepository.countByPostId(post.getId()));
+        item.put("commentCount", commentRepository.countByPostIdAndIsDeletedFalse(post.getId()));
+        item.put("isAnonymous", Boolean.TRUE.equals(post.getIsAnonymous()));
+
+        // 作者信息
+        if (Boolean.TRUE.equals(post.getIsAnonymous())) {
+            item.put("authorName", "匿名");
+            item.put("authorAvatar", "");
+        } else {
+            User user = userRepository.findById(post.getUserId()).orElse(null);
+            if (user != null) {
+                item.put("authorName", user.getNickname() != null ? user.getNickname() : "用户" + user.getId());
+                item.put("authorAvatar", user.getAvatar() != null ? user.getAvatar() : "");
+            } else {
+                item.put("authorName", "未知用户");
+                item.put("authorAvatar", "");
+            }
+        }
+        return item;
+    }
+
     private String sanitizeContent(String raw) {
         if (raw == null) return null;
         return raw.trim().replaceAll("\\s+", " ");
+    }
+
+    private List<String> parseTags(String tagsJson) {
+        if (tagsJson == null || tagsJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            String[] arr = objectMapper.readValue(tagsJson, String[].class);
+            return List.of(arr);
+        } catch (Exception e) {
+            // fallback: 逗号分隔的旧格式
+            return List.of(tagsJson.split(","));
+        }
     }
 
     private String getWeatherIcon(String code) {

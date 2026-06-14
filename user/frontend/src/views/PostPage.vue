@@ -1,5 +1,6 @@
 <template>
   <div class="page post-page">
+    <Toast ref="toast" />
     <div class="post-container">
       <h2 class="page-title">记录心情</h2>
       <p class="page-desc">写下此刻的感受，它将变成校园里的一片云</p>
@@ -39,6 +40,14 @@
       ></textarea>
       <div class="char-count">{{ content.length }}/500</div>
 
+      <!-- 匿名开关 -->
+      <div class="anon-row">
+        <label class="anon-toggle">
+          <input type="checkbox" v-model="isAnonymous" />
+          <span>匿名投稿</span>
+        </label>
+      </div>
+
       <!-- 提交 -->
       <button
         class="btn submit-btn"
@@ -67,8 +76,12 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
-import { api, isLoggedIn } from '../api/index.js'
+import { ref, computed, onMounted } from 'vue'
+import { createLogger } from '../utils/debug.js'
+import Toast from '../components/Toast.vue'
+import { api, isLoggedIn, getProfile } from '../api/index.js'
+
+const log = createLogger('PostPage')
 import { ZONES, getZoneByBuilding } from '../three/ZoneData.js'
 
 // 整理为前端展示用的分区组
@@ -83,6 +96,16 @@ const selectedBuilding = ref('')
 const selectedZoneId = ref('')
 const submitting = ref(false)
 const result = ref(null)
+const isAnonymous = ref(false)
+const toast = ref(null)
+
+// 初始化匿名设置
+onMounted(() => {
+  if (isLoggedIn()) {
+    const profile = getProfile()
+    isAnonymous.value = profile.defaultAnonymous === true
+  }
+})
 
 const canSubmit = computed(() =>
   content.value.trim().length > 0 &&
@@ -91,6 +114,7 @@ const canSubmit = computed(() =>
 )
 
 function selectBuilding(buildingName, zoneId) {
+  log.log('selectBuilding', { buildingName, zoneId })
   if (selectedBuilding.value === buildingName) {
     selectedBuilding.value = ''
     selectedZoneId.value = ''
@@ -103,24 +127,27 @@ function selectBuilding(buildingName, zoneId) {
 
 async function submitPost() {
   if (!canSubmit.value) return
+  log.log('submitPost 开始', { content: content.value.trim().slice(0,30), building: selectedBuilding.value, zone: selectedZoneId.value, anonymous: isAnonymous.value })
   submitting.value = true
   result.value = null
   try {
     const res = await api.submitPost(
       content.value.trim(),
       selectedBuilding.value,
-      selectedZoneId.value
+      selectedZoneId.value,
+      isAnonymous.value
     )
+    log.log('投稿返回', { code: res.code, weather: res.data?.weatherName, emotion: res.data?.emotionType })
     if (res.code === 0 && res.data) {
       result.value = res.data
       content.value = ''
     } else if (res.code === 401) {
-      alert('请先登录后再投稿')
+      toast.value?.show('请先登录后再投稿', 'warning')
     } else {
-      alert(res.message || '投稿失败')
+      toast.value?.show(res.message || '投稿失败', 'error')
     }
   } catch (e) {
-    alert('网络错误，请稍后重试')
+    toast.value?.show('网络错误，请稍后重试', 'error')
   } finally {
     submitting.value = false
   }
@@ -236,6 +263,23 @@ async function submitPost() {
   font-size: 11px;
   color: var(--text-secondary);
   margin: 4px 0 14px;
+}
+
+.anon-row {
+  margin-bottom: 14px;
+}
+
+.anon-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+}
+
+.anon-toggle input {
+  width: auto;
 }
 
 .submit-btn {

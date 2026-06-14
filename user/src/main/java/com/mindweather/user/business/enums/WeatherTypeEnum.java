@@ -20,12 +20,16 @@ public enum WeatherTypeEnum {
     private final String name;
 
     private static final Map<String, WeatherTypeEnum> EMOTION_MAP = Map.of(
+            "愉悦", SUNNY,
             "开心", SUNNY,
             "平静", CLOUDY,
+            "疲惫", OVERCAST,
             "压力", OVERCAST,
-            "焦虑", RAINY,
-            "悲伤", HEAVY_RAIN,
-            "崩溃", THUNDERSTORM
+            "低落", RAINY,
+            "悲伤", RAINY,
+            "焦虑", HEAVY_RAIN,
+            "崩溃", THUNDERSTORM,
+            "愤怒", THUNDERSTORM
     );
 
     WeatherTypeEnum(String code, String icon, String name) {

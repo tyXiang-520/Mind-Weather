@@ -1,5 +1,6 @@
 <template>
   <div class="page my-page">
+    <Toast ref="toast" />
     <div class="my-container">
       <!-- Not logged in -->
       <div v-if="!loggedIn" class="empty-state">
@@ -59,14 +60,19 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { createLogger } from '../utils/debug.js'
 import { api, saveToken, isLoggedIn } from '../api/index.js'
 import Map2D from '../components/Map2D.vue'
+import Toast from '../components/Toast.vue'
+
+const log = createLogger('MyPage')
 
 const email = ref('')
 const password = ref('')
 const loggedIn = ref(false)
 const todayWeather = ref({})
 const myPosts = ref([])
+const toast = ref(null)
 
 // 从投稿中提取每栋建筑的天气
 const buildingWeathers = computed(() => {
@@ -80,29 +86,33 @@ const buildingWeathers = computed(() => {
 })
 
 loggedIn.value = isLoggedIn()
+log.log('初始化', { loggedIn: loggedIn.value })
 
 async function doLogin() {
   if (!email.value.trim() || !password.value.trim()) {
-    alert('请输入邮箱和密码'); return
+    toast.value?.show('请输入邮箱和密码', 'warning'); return
   }
+  log.log('doLogin', { email: email.value.trim() })
   const res = await api.login(email.value, password.value)
-  if (res.code === 0) { saveToken(res.data.token); loggedIn.value = true; loadData() }
-  else alert(res.message)
+  if (res.code === 0) { saveToken(res.data.token); loggedIn.value = true; loadData(); log.log('登录成功') }
+  else { log.log('登录失败', { message: res.message }); toast.value?.show(res.message, 'error') }
 }
 
 async function doRegister() {
   if (!email.value.trim() || !password.value.trim()) {
-    alert('请输入邮箱和密码'); return
+    toast.value?.show('请输入邮箱和密码', 'warning'); return
   }
   if (password.value.length < 6) {
-    alert('密码至少6位'); return
+    toast.value?.show('密码至少6位', 'warning'); return
   }
+  log.log('doRegister', { email: email.value.trim() })
   const res = await api.register(email.value, password.value)
-  if (res.code === 0) { saveToken(res.data.token); loggedIn.value = true; loadData() }
-  else alert(res.message)
+  if (res.code === 0) { saveToken(res.data.token); loggedIn.value = true; loadData(); log.log('注册成功') }
+  else { log.log('注册失败', { message: res.message }); toast.value?.show(res.message, 'error') }
 }
 
 async function loadData() {
+  log.log('loadData')
   try {
     const [weather, posts] = await Promise.all([
       api.getTodayWeather(),
@@ -110,6 +120,7 @@ async function loadData() {
     ])
     if (weather.code === 0) todayWeather.value = weather.data
     if (posts.code === 0) {
+      log.log('获取数据成功', { posts: posts.data?.length })
       // 注入 mock 建筑名和天气（后端完善后由 API 直接返回）
       myPosts.value = posts.data.map(p => ({
         ...p,
@@ -119,7 +130,7 @@ async function loadData() {
     }
   } catch (e) {
     // API 不可用时用 mock 数据
-    console.log('API 未连接，使用 mock 个人数据')
+    log.log('API 未连接，使用 mock 个人数据')
     myPosts.value = [
       { postId: 1, weatherIcon: '☀️', weatherName: '晴', weatherCode: 'sunny', buildingName: '北大楼', content: '今天在草坪上晒太阳', areaName: 'B区 历史核心', createdAt: '2 小时前' },
       { postId: 2, weatherIcon: '🌧️', weatherName: '小雨', weatherCode: 'rainy', buildingName: '图书馆', content: 'ddl压力好大...', areaName: 'A区 教学核心', createdAt: '5 小时前' },
@@ -134,10 +145,13 @@ function mapWeatherFromEmotion(emotion) {
 }
 
 function onMapBuildingClick(data) {
-  console.log('2D地图点击建筑:', data)
+  log.log('onMapBuildingClick', { name: data?.name, weather: data?.weather })
 }
 
-onMounted(() => { if (loggedIn.value) loadData() })
+onMounted(() => {
+  log.log('onMounted', { loggedIn: loggedIn.value })
+  if (loggedIn.value) loadData()
+})
 </script>
 
 <style scoped>

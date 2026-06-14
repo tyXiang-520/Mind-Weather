@@ -52,6 +52,24 @@ public class MoodController {
         return Result.success(posts);
     }
 
+    @GetMapping("/building")
+    public Result<List<Map<String, Object>>> getBuildingPosts(
+            @RequestParam String name,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int pageSize) {
+        List<Map<String, Object>> posts = moodService.getBuildingPosts(name, page, pageSize);
+        return Result.success(posts);
+    }
+
+    @GetMapping("/zone")
+    public Result<List<Map<String, Object>>> getZonePosts(
+            @RequestParam String zoneId,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int pageSize) {
+        List<Map<String, Object>> posts = moodService.getZonePosts(zoneId, page, pageSize);
+        return Result.success(posts);
+    }
+
     @DeleteMapping("/{postId}")
     public Result<Void> deletePost(@PathVariable Long postId) {
         Long userId = getUserId();
