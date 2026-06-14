@@ -3,12 +3,18 @@ package com.mindweather.user.business.service.impl;
 import com.mindweather.user.business.config.ZoneConfig;
 import com.mindweather.user.business.service.MapDisplayService;
 import com.mindweather.user.entity.Post;
+import com.mindweather.user.entity.User;
+import com.mindweather.user.repository.CommentRepository;
 import com.mindweather.user.repository.PostRepository;
+import com.mindweather.user.repository.UserRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -17,7 +23,10 @@ import java.util.stream.Collectors;
 public class MapDisplayServiceImpl implements MapDisplayService {
 
     private final PostRepository postRepository;
+    private final CommentRepository commentRepository;
+    private final UserRepository userRepository;
     private final ZoneConfig zoneConfig;
+    private final ObjectMapper objectMapper;
 
     // 天气对应的 emoji 和中文名
     private static final Map<String, String[]> WEATHER_META = Map.of(
@@ -26,12 +35,16 @@ public class MapDisplayServiceImpl implements MapDisplayService {
         "overcast", new String[]{"☁️", "阴"},
         "rainy", new String[]{"🌧️", "小雨"},
         "heavy_rain", new String[]{"⛈️", "暴雨"},
-        "thunderstorm", new String[]{"🌩️", "雷暴"}
+        "thunderstorm", new String[]{"🌩️", "雷暴"},
+        "snow", new String[]{"❄️", "雪"}
     );
 
-    public MapDisplayServiceImpl(PostRepository postRepository, ZoneConfig zoneConfig) {
+    public MapDisplayServiceImpl(PostRepository postRepository, CommentRepository commentRepository, UserRepository userRepository, ZoneConfig zoneConfig, ObjectMapper objectMapper) {
         this.postRepository = postRepository;
+        this.commentRepository = commentRepository;
+        this.userRepository = userRepository;
         this.zoneConfig = zoneConfig;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -44,6 +57,7 @@ public class MapDisplayServiceImpl implements MapDisplayService {
         overview.put("totalPostsToday", getTotalPostsToday());
         overview.put("hotTags", getHotTags(10));
         overview.put("emotionDistribution", getEmotionDistribution(todayStart));
+        overview.put("hotComments", getRecentPosts(5));
 
         // 12 分区数据（含各分区真实天气）
         List<Object[]> zoneWeatherCounts = postRepository.countWeatherByZoneSince(todayStart);
@@ -137,10 +151,20 @@ public class MapDisplayServiceImpl implements MapDisplayService {
         Map<String, Long> tagCounts = new HashMap<>();
         for (Post post : recentPosts) {
             if (post.getTags() != null && !post.getTags().isBlank()) {
-                for (String tag : post.getTags().split(",")) {
-                    tag = tag.trim();
-                    if (!tag.isEmpty()) {
-                        tagCounts.merge(tag, 1L, Long::sum);
+                try {
+                    String[] tags = objectMapper.readValue(post.getTags(), String[].class);
+                    for (String tag : tags) {
+                        if (!tag.isBlank()) {
+                            tagCounts.merge(tag.trim(), 1L, Long::sum);
+                        }
+                    }
+                } catch (Exception e) {
+                    // fallback: 逗号分隔的旧格式
+                    for (String tag : post.getTags().split(",")) {
+                        tag = tag.trim();
+                        if (!tag.isEmpty()) {
+                            tagCounts.merge(tag, 1L, Long::sum);
+                        }
                     }
                 }
             }
@@ -210,5 +234,40 @@ public class MapDisplayServiceImpl implements MapDisplayService {
     private String getWeatherName(String code) {
         String[] meta = WEATHER_META.get(code);
         return meta != null ? meta[1] : "多云";
+    }
+
+    private List<Map<String, Object>> getRecentPosts(int limit) {
+        List<Post> recentPosts = postRepository.findByIsDeletedFalseAndCreatedAtAfterOrderByCreatedAtDesc(
+                LocalDate.now().minusDays(7).atStartOfDay());
+        return recentPosts.stream().limit(limit).map(post -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", post.getId());
+            item.put("content", post.getContent());
+            item.put("weatherCode", post.getWeatherCode());
+            item.put("weatherIcon", getWeatherIcon(post.getWeatherCode()));
+            item.put("buildingName", post.getBuildingName());
+            item.put("zoneId", post.getZoneId());
+            item.put("createdAt", post.getCreatedAt() != null ? post.getCreatedAt().format(DateTimeFormatter.ofPattern("MM-dd HH:mm")) : "");
+
+            // 作者信息
+            if (Boolean.TRUE.equals(post.getIsAnonymous())) {
+                item.put("authorName", "匿名");
+                item.put("authorAvatar", "");
+            } else {
+                User user = userRepository.findById(post.getUserId()).orElse(null);
+                item.put("authorName", user != null ? user.getNickname() : "用户" + post.getUserId());
+                item.put("authorAvatar", user != null && user.getAvatar() != null ? user.getAvatar() : "");
+            }
+
+            // 标签
+            try {
+                List<String> tags = objectMapper.readValue(post.getTags() != null ? post.getTags() : "[]", new TypeReference<List<String>>() {});
+                item.put("tags", tags);
+            } catch (Exception e) {
+                item.put("tags", List.of());
+            }
+
+            return item;
+        }).collect(Collectors.toList());
     }
 }

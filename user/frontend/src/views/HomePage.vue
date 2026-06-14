@@ -1,10 +1,11 @@
 <template>
   <div class="home-page">
-    <!-- 3D 校园场景（GLB 模型） -->
+    <!-- 3D 校园场景（生产模式，无调试面板） -->
     <NJU3D
       ref="nju3dRef"
       class="scene-layer"
       :weather="displayWeather"
+      :debug="false"
       @building-click="onBuildingClick"
       @ready="onSceneReady"
     />
@@ -18,7 +19,17 @@
           <div class="logo-sub">你的心情，映照天气</div>
         </div>
       </div>
+      <div class="top-actions">
+        <button class="overview-btn" @click="showOverview = true">🗺️ 天气总览</button>
+      </div>
     </div>
+
+    <!-- 天气总览面板 -->
+    <WeatherOverviewPanel
+      :show="showOverview"
+      :zones="overviewZones"
+      @close="showOverview = false"
+    />
 
     <!-- 建筑投稿面板（点击建筑后弹出） -->
     <div class="building-panel" :class="{ visible: selectedBuilding }">
@@ -32,6 +43,22 @@
           </div>
           <button class="bp-close" @click="selectedBuilding = null">✕</button>
         </div>
+        <!-- 区域统计 -->
+        <div class="bp-stats" v-if="selectedZoneData">
+          <div class="bp-stat-row">
+            <span class="bp-stat-label">天气</span>
+            <span class="bp-stat-value">{{ getWeatherIcon(selectedZoneData.weatherCode) }} {{ selectedZoneData.weatherName || '多云' }}</span>
+          </div>
+          <div class="bp-stat-row">
+            <span class="bp-stat-label">投稿数</span>
+            <span class="bp-stat-value">{{ selectedZoneData.postCount || 0 }} 篇</span>
+          </div>
+          <div class="bp-stat-row">
+            <span class="bp-stat-label">主导情绪</span>
+            <span class="bp-stat-value">{{ selectedZoneData.dominantEmotion || '平静' }}</span>
+          </div>
+        </div>
+        <!-- 该建筑最近投稿 -->
         <div class="bp-posts">
           <div class="bp-posts-title">最近心情</div>
           <div v-if="buildingPosts.length === 0" class="bp-empty">
@@ -44,6 +71,11 @@
               <div class="bp-post-meta">{{ post.time }}</div>
             </div>
           </div>
+          <button
+            v-if="selectedBuilding"
+            class="bp-view-more"
+            @click="viewBuildingDetail"
+          >查看全部动态 →</button>
         </div>
       </div>
     </div>
@@ -89,18 +121,18 @@
           </div>
         </div>
 
-        <!-- Hot comments -->
+        <!-- 最新投稿 -->
         <div class="comments-section">
           <div class="section-title">
             大家正在说
-            <span class="section-count">({{ totalComments }})</span>
+            <span class="section-count">({{ hotComments.length }})</span>
           </div>
           <div class="comment-list">
-            <div v-for="comment in hotComments" :key="comment.id" class="comment-item">
-              <img class="comment-avatar" :src="comment.avatar" alt="avatar" />
+            <div v-for="post in hotComments" :key="post.id" class="comment-item">
+              <span class="comment-avatar-emoji">{{ post.authorAvatar || '👤' }}</span>
               <div class="comment-body">
-                <div class="comment-text">{{ comment.text }}</div>
-                <div class="comment-time">{{ comment.time }}</div>
+                <div class="comment-text">{{ post.content }}</div>
+                <div class="comment-time">{{ post.authorName }} · {{ post.buildingName }} · {{ post.createdAt }}</div>
               </div>
             </div>
           </div>
@@ -121,10 +153,15 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { createLogger } from '../utils/debug.js'
 import NJU3D from '../components/NJU3D.vue'
+import WeatherOverviewPanel from '../components/WeatherOverviewPanel.vue'
 import { api } from '../api/index.js'
 
+const log = createLogger('Home')
+
+const emit = defineEmits(['buildingClick', 'ready', 'building-detail'])
 const nju3dRef = ref(null)
 const drawerCollapsed = ref(true)
 const campusWeatherName = ref('多云')
@@ -132,40 +169,37 @@ const totalComments = ref(0)
 const displayWeather = ref('cloudy')
 const sceneReady = ref(false)
 
+// 天气总览
+const showOverview = ref(false)
+const overviewZones = ref([])
+
 // 选中建筑
 const selectedBuilding = ref(null)
 const buildingPosts = ref([])
 
-// Mock 投稿数据池
-const MOCK_POSTS = [
-  { weatherIcon: '☀️', content: '今天北大楼前面阳光真好，拍照超美！', time: '3 分钟前' },
-  { weatherIcon: '⛅', content: '图书馆自习到崩溃，谁来救救我...', time: '12 分钟前' },
-  { weatherIcon: '🌧️', content: 'ddl快到了，心情像下雨一样沉重', time: '28 分钟前' },
-  { weatherIcon: '☀️', content: '在大礼堂听了一场很棒的讲座', time: '1 小时前' },
-  { weatherIcon: '⛅', content: '梧桐大道太美了，秋天的校园就是最好的', time: '1 小时前' },
-  { weatherIcon: '🌩️', content: '考试周压力爆炸，头发一把把掉', time: '2 小时前' },
-  { weatherIcon: '☀️', content: '食堂今天的麻辣香锅格外好吃！', time: '3 小时前' },
-  { weatherIcon: '🌧️', content: '操场上跑了五公里，浑身湿透但很爽', time: '4 小时前' },
-]
+// 情绪统计
+const emotionStats = ref([
+  { name: '愉悦', percent: 0, color: '#f0a860' },
+  { name: '平静', percent: 0, color: '#5ac8a0' },
+  { name: '焦虑', percent: 0, color: '#7ec8e3' },
+  { name: '低落', percent: 0, color: '#a080d0' },
+  { name: '其他', percent: 0, color: '#888888' },
+])
+
+// 热门评论
+const hotComments = ref([])
+const hotTags = ref([])
 
 // ═══════════ 主天气图标 ═══════════
 const mainWeatherIcon = computed(() => {
   const icons = {
     sunny: '☀️', cloudy: '⛅', overcast: '☁️',
-    rainy: '🌧️', heavy_rain: '⛈️', thunderstorm: '🌩️'
+    rainy: '🌧️', heavy_rain: '⛈️', thunderstorm: '🌩️', snow: '❄️'
   }
   return icons[displayWeather.value] || '⛅'
 })
 
-// ═══════════ 情绪统计（Mock，后续从 API 获取） ═══════════
-const emotionStats = ref([
-  { name: '愉悦', percent: 32, color: '#f0a860' },
-  { name: '平静', percent: 28, color: '#5ac8a0' },
-  { name: '焦虑', percent: 23, color: '#7ec8e3' },
-  { name: '低落', percent: 12, color: '#a080d0' },
-  { name: '其他', percent: 5, color: '#888888' },
-])
-
+// ═══════════ 情绪统计（圆环图） ═══════════
 const donutSegments = computed(() => {
   const r = 40
   const circumference = 2 * Math.PI * r
@@ -178,21 +212,17 @@ const donutSegments = computed(() => {
   })
 })
 
-const hotComments = ref([
-  { id: 1, text: '图书馆自习好累...', time: '1 分钟前', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=1' },
-  { id: 2, text: '今天阳光真好！', time: '3 分钟前', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=2' },
-  { id: 3, text: 'ddl快来了T_T', time: '5 分钟前', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=3' },
-])
-
-const hotTags = ref([
-  { name: '考试周' }, { name: 'DDL' }, { name: '小组作业' }, { name: '保研' }, { name: '实习' },
-])
+// ═══════════ 选中建筑所属分区数据 ═══════════
+const selectedZoneData = computed(() => {
+  if (!selectedBuilding.value?.zone) return null
+  const zoneId = selectedBuilding.value.zone.id
+  return overviewZones.value.find(z => z.id === zoneId) || null
+})
 
 // ═══════════ 事件 ═══════════
 function onBuildingClick(data) {
-  console.log('点击建筑:', data.displayName || data.name, '分区:', data.zone)
+  log.log('onBuildingClick', { name: data.displayName || data.name, zone: data.zone, center: data.center })
 
-  // 避免重复点击同一建筑
   if (selectedBuilding.value?.name === data.name) {
     selectedBuilding.value = null
     buildingPosts.value = []
@@ -201,49 +231,176 @@ function onBuildingClick(data) {
 
   selectedBuilding.value = data
 
-  // 生成 mock 投稿（随机取 2-4 条）
-  const count = 2 + Math.floor(Math.random() * 3)
-  const shuffled = [...MOCK_POSTS].sort(() => Math.random() - 0.5)
-  buildingPosts.value = shuffled.slice(0, count).map((p, i) => ({
-    ...p,
-    id: Date.now() + i
-  }))
+  // 从 API 获取真实投稿
+  loadBuildingPosts(data.name)
 
   // 收起抽屉
   drawerCollapsed.value = true
 }
 
 function onSceneReady() {
+  log.log('onSceneReady — 3D场景加载完成')
   sceneReady.value = true
 }
 
-// ═══════════ API ═══════════
-onMounted(async () => {
+function viewBuildingDetail() {
+  log.log('viewBuildingDetail', { name: selectedBuilding.value?.name })
+  if (selectedBuilding.value?.name) {
+    emit('building-detail', selectedBuilding.value.name)
+  }
+}
+
+// ═══════════ API 调用 ═══════════
+async function loadBuildingPosts(buildingName) {
+  log.log('loadBuildingPosts', { buildingName })
+  try {
+    const res = await api.getBuildingPosts(buildingName)
+    if (res.code === 0 && res.data) {
+      log.log('loadBuildingPosts success', { count: res.data.length })
+      buildingPosts.value = res.data.map(p => ({
+        id: p.id,
+        content: p.content,
+        weatherIcon: getWeatherIcon(p.weatherCode),
+        time: formatTime(p.createdAt)
+      }))
+    }
+  } catch (e) {
+    log.error('加载建筑投稿失败:', e)
+    buildingPosts.value = []
+  }
+}
+
+async function loadMapOverview() {
+  log.log('loadMapOverview')
   try {
     const res = await api.getMapOverview()
     if (res.code === 0 && res.data) {
+      log.log('loadMapOverview success', { campusWeather: res.data.campusMainWeather, areaCount: res.data.areas?.length })
       totalComments.value = res.data.totalPostsToday || 0
+
+      // 全校主天气
       const cw = res.data.campusMainWeather
       if (cw) {
         campusWeatherName.value = cw.weatherName || '多云'
-        displayWeather.value = mapWeatherCode(cw.weatherCode)
+        displayWeather.value = cw.weatherCode || 'cloudy'
       }
+
+      // 热门标签
       if (res.data.hotTags) {
         hotTags.value = res.data.hotTags.slice(0, 8).map(t => ({ name: t.name }))
       }
+
+      // 最新投稿
+      if (res.data.hotComments) {
+        hotComments.value = res.data.hotComments.map(p => ({
+          id: p.id,
+          content: p.content,
+          createdAt: p.createdAt,
+          authorName: p.authorName || '匿名',
+          authorAvatar: p.authorAvatar || '👤',
+          buildingName: p.buildingName || '',
+          weatherIcon: p.weatherIcon || '',
+          tags: p.tags || []
+        }))
+      }
+
+      // 情绪分布
+      if (res.data.emotionDistribution) {
+        updateEmotionStats(res.data.emotionDistribution)
+      }
+
+      // ★ 用 API 返回的真实天气更新各分区（替代 ZoneData.js 静态数据）
+      if (res.data.areas && nju3dRef.value) {
+        const weatherMap = {}
+        for (const area of res.data.areas) {
+          weatherMap[area.id] = area.weatherCode || 'cloudy'
+        }
+        nju3dRef.value.setAllZoneWeathers(weatherMap)
+      }
     }
   } catch (e) {
-    console.log('API 未连接，使用默认数据')
+    log.log('API 未连接，使用默认数据')
   }
+}
+
+function updateEmotionStats(distribution) {
+  if (!distribution) return
+  // 后端返回 {happy: {count: 5, percent: 50}} 或 {happy: 5}，两种格式兼容
+  const counts = {}
+  let total = 0
+  for (const [key, val] of Object.entries(distribution)) {
+    const count = typeof val === 'object' && val !== null ? (val.count || 0) : (val || 0)
+    counts[key] = count
+    total += count
+  }
+  if (total === 0) return
+
+  const map = {
+    happy: { name: '愉悦', color: '#f0a860' },
+    calm: { name: '平静', color: '#5ac8a0' },
+    anxious: { name: '焦虑', color: '#7ec8e3' },
+    sad: { name: '低落', color: '#a080d0' },
+  }
+
+  const stats = []
+  for (const [key, count] of Object.entries(counts)) {
+    const meta = map[key] || { name: key, color: '#888888' }
+    stats.push({ name: meta.name, percent: Math.round(count * 100 / total), color: meta.color })
+  }
+  emotionStats.value = stats
+}
+
+function getWeatherIcon(code) {
+  const icons = { sunny: '☀️', cloudy: '⛅', overcast: '☁️', rainy: '🌧️', heavy_rain: '⛈️', thunderstorm: '🌩️', snow: '❄️' }
+  return icons[code] || '⛅'
+}
+
+function formatTime(dateStr) {
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  const now = Date.now()
+  const diff = now - d.getTime()
+  if (diff < 60000) return '刚刚'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`
+  return `${Math.floor(diff / 86400000)} 天前`
+}
+
+// 定时刷新天气数据（每 60 秒）
+let refreshTimer = null
+
+async function loadOverview() {
+  log.log('loadOverview')
+  try {
+    const res = await api.getMapOverview()
+    if (res.code === 0 && res.data && res.data.areas) {
+      log.log('loadOverview success', { zoneCount: res.data.areas.length })
+      overviewZones.value = res.data.areas.map(a => ({
+        id: a.id,
+        name: a.name,
+        weatherCode: a.weatherCode || 'cloudy',
+        postCount: a.postCount || 0
+      }))
+    }
+  } catch (e) {
+    log.error('加载总览失败:', e)
+  }
+}
+
+onMounted(() => {
+  log.log('onMounted — 首页初始化')
+  loadMapOverview()
+  loadOverview()
+  refreshTimer = setInterval(() => {
+    log.log('60s刷新 — loadMapOverview + loadOverview')
+    loadMapOverview()
+    loadOverview()
+  }, 60000)
 })
 
-function mapWeatherCode(code) {
-  const map = {
-    sunny: 'sunny', cloudy: 'cloudy', overcast: 'overcast',
-    rainy: 'rainy', heavy_rain: 'heavy_rain', thunderstorm: 'thunderstorm'
-  }
-  return map[code] || 'cloudy'
-}
+onBeforeUnmount(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>
 
 <style scoped>
@@ -272,9 +429,30 @@ function mapWeatherCode(code) {
   right: 0;
   z-index: 20;
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 16px;
   pointer-events: none;
 }
+
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.overview-btn {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(10,10,30,0.4);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s;
+  pointer-events: auto;
+}
+.overview-btn:hover { background: rgba(255,255,255,0.15); }
 
 .logo {
   display: flex;
@@ -437,13 +615,18 @@ function mapWeatherCode(code) {
   gap: 10px;
 }
 
-.comment-avatar {
+.comment-avatar-emoji {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
   flex-shrink: 0;
+  background: rgba(255,255,255,0.06);
 }
+
 
 .comment-body { flex: 1; min-width: 0; }
 
@@ -548,6 +731,30 @@ function mapWeatherCode(code) {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+.bp-stats {
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 12px;
+}
+
+.bp-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.bp-stat-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.bp-stat-value {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+  font-weight: 500;
 }
 
 .bp-posts-title {

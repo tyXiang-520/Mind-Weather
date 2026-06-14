@@ -26,8 +26,21 @@
       </div>
     </div>
 
-    <!-- 分区天气调试面板 -->
-    <div class="zone-weather-panel">
+    <!-- 分区标签层 -->
+    <div class="zone-labels-layer">
+      <div
+        v-for="zlabel in visibleZoneLabels"
+        :key="zlabel.id"
+        class="zone-label"
+        :style="zlabel.style"
+      >
+        <span class="zone-label-icon">{{ getWeatherIcon(zlabel.weather) }}</span>
+        <span class="zone-label-text">{{ zlabel.id }}区 {{ zlabel.name }}</span>
+      </div>
+    </div>
+
+    <!-- 分区天气调试面板（仅 debug 模式显示） -->
+    <div v-if="debug" class="zone-weather-panel">
       <div class="zone-panel-title">分区天气调试</div>
       <div class="zone-grid">
         <div
@@ -53,6 +66,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { createLogger } from '../utils/debug.js'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
@@ -64,20 +78,24 @@ import { extractBuildings, resolveBuildingName } from '../three/BuildingRegistry
 import { WeatherSystem } from '../three/WeatherSystem.js'
 import { getZoneByBuilding, getAllZones, getZoneWeather, setZoneWeather } from '../three/ZoneData.js'
 
+const log = createLogger('NJU3D')
+
 const props = defineProps({
-  weather: { type: String, default: 'cloudy' }
+  weather: { type: String, default: 'cloudy' },
+  debug: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['buildingClick', 'ready'])
+const emit = defineEmits(['buildingClick', 'ready', 'zoneWeatherChange'])
 
 // ═══════════ 天气色调映射 ═══════════
 const WEATHER_COLORS = {
   sunny: 0xf0c040,
-  cloudy: 0xc0c8d0,
-  overcast: 0x888890,
+  cloudy: 0xcccccc,
+  overcast: 0x888888,
   rainy: 0x5588aa,
-  heavy_rain: 0x446688,
-  thunderstorm: 0x554488
+  heavy_rain: 0x3366aa,
+  thunderstorm: 0x6644aa,
+  snow: 0xe8eeff
 }
 
 // ═══════════ 状态 ═══════════
@@ -86,6 +104,7 @@ const loading = ref(true)
 const loadProgress = ref(0)
 const currentWeather = ref(props.weather)
 const visibleLabels = ref([])
+const visibleZoneLabels = ref([])
 
 const weatherTypes = [
   { code: 'sunny', icon: '☀️', label: '晴' },
@@ -93,7 +112,8 @@ const weatherTypes = [
   { code: 'overcast', icon: '☁️', label: '阴' },
   { code: 'rainy', icon: '🌧️', label: '雨' },
   { code: 'heavy_rain', icon: '⛈️', label: '暴雨' },
-  { code: 'thunderstorm', icon: '🌩️', label: '雷暴' }
+  { code: 'thunderstorm', icon: '🌩️', label: '雷暴' },
+  { code: 'snow', icon: '❄️', label: '雪' }
 ]
 
 // 分区列表（响应式，用于调试面板）
@@ -104,25 +124,45 @@ let scene, camera, renderer, controls, composer, bloomPass
 let weatherSystem, animationId
 let gltfScene, buildingMap
 let zoneIndicators = []  // 分区天气指示器
+let zonePlanes = []       // 分区地面色块
 
 // ═══════════ 初始化 ═══════════
 onMounted(() => {
+  log.log('onMounted 初始化场景')
   initScene()
+  animate()
 })
 
 onBeforeUnmount(() => {
+  log.log('onBeforeUnmount 销毁场景')
   cancelAnimationFrame(animationId)
   window.removeEventListener('resize', onResize)
   if (controls) controls.dispose()
   if (weatherSystem) weatherSystem.dispose()
-  if (renderer) renderer.dispose()
+  if (scene) {
+    scene.traverse(child => {
+      if (child.geometry) child.geometry.dispose()
+      if (child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach(m => m.dispose())
+        } else {
+          child.material.dispose()
+        }
+      }
+    })
+  }
   if (composer) composer.dispose()
+  if (renderer) {
+    renderer.dispose()
+    renderer.domElement?.remove()
+  }
 })
 
 // ═══════════ 场景初始化 ═══════════
 function initScene() {
   const container = containerRef.value
-  if (!container) return
+  if (!container) { log.log('initScene 跳过 — container 为空'); return }
+  log.log('initScene', { w: container.clientWidth, h: container.clientHeight })
 
   const w = container.clientWidth
   const h = container.clientHeight
@@ -134,7 +174,7 @@ function initScene() {
 
   // ── 相机 ──
   camera = new THREE.PerspectiveCamera(45, w / h, 1, 800)
-  camera.position.set(80, 100, 80)
+  camera.position.set(0, 120, 60)
   camera.lookAt(0, 0, -25)
 
   // ── 渲染器 ──
@@ -155,10 +195,10 @@ function initScene() {
   composer = new EffectComposer(renderer)
   composer.addPass(new RenderPass(scene, camera))
   bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(w, h),
-    0.25,  // strength
-    0.5,   // radius
-    0.6    // threshold — 更高=只有亮部发光
+    new THREE.Vector2(w / 2, h / 2),  // 半分辨率 bloom，大幅降负载
+    0.2,   // strength
+    0.4,   // radius
+    0.5    // threshold
   )
   composer.addPass(bloomPass)
 
@@ -167,14 +207,14 @@ function initScene() {
 
   // ── OrbitControls ──
   controls = new OrbitControls(camera, renderer.domElement)
-  controls.target.set(5, 0, -30)
+  controls.target.set(0, 0, -25)
   controls.enableDamping = true
   controls.dampingFactor = 0.08
   controls.minDistance = 15
   controls.maxDistance = 250
   controls.maxPolarAngle = Math.PI / 2.2
   controls.autoRotate = true
-  controls.autoRotateSpeed = 0.3
+  controls.autoRotateSpeed = 0.15
   controls.update()
 
   // ── 加载模型 ──
@@ -249,6 +289,7 @@ function loadModel() {
       // 分配建筑到分区 + 创建分区天气指示器
       assignBuildingsToZones()
       createZoneIndicators()
+      initZoneLabels()
 
       // 生成标签
       updateLabels()
@@ -263,7 +304,7 @@ function loadModel() {
       }
     },
     (error) => {
-      console.error('❌ 模型加载失败:', error)
+      log.error('❌ 模型加载失败:', error)
       loading.value = false
     }
   )
@@ -300,22 +341,28 @@ function updateLabelPositions() {
     pos.y += 2.5 // 标签放在建筑上方
     pos.project(camera)
 
-    const x = (pos.x * 0.5 + 0.5) * cw
-    const y = (-pos.y * 0.5 + 0.5) * ch
+    const rawX = (pos.x * 0.5 + 0.5) * cw
+    const rawY = (-pos.y * 0.5 + 0.5) * ch
 
     // 在相机后面或屏幕外隐藏
-    if (pos.z > 1 || x < -50 || x > cw + 50 || y < -50 || y > ch + 50) {
+    if (pos.z > 1 || rawX < -50 || rawX > cw + 50 || rawY < -50 || rawY > ch + 50) {
       label.style = { display: 'none' }
     } else {
-      const dist = camera.position.distanceTo(label.worldPos)
-      // 缩短显示距离：80以内全显示，80-200渐隐，200以上隐藏
+      const dist = Math.round(camera.position.distanceTo(label.worldPos))
       const opacity = Math.max(0, Math.min(1, 1 - (dist - 80) / 120))
       const scale = Math.max(0.5, Math.min(1, 1 - (dist - 60) / 140))
 
+      const newX = Math.round(rawX)
+      const newY = Math.round(rawY)
+      const lastX = label._x || 0; const lastY = label._y || 0
+      // 变化 ≤ 2px 不更新，避免亚像素抖动
+      if (Math.abs(newX - lastX) <= 2 && Math.abs(newY - lastY) <= 2) continue
+      label._x = newX; label._y = newY
+
       label.style = {
         display: 'flex',
-        left: x + 'px',
-        top: y + 'px',
+        left: newX + 'px',
+        top: newY + 'px',
         opacity,
         transform: `translate(-50%, -50%) scale(${scale})`
       }
@@ -325,7 +372,10 @@ function updateLabelPositions() {
 
 // ═══════════ 交互 ═══════════
 function onCanvasClick(event) {
-  if (!camera || !gltfScene || !buildingMap) return
+  if (!camera || !gltfScene || !buildingMap) {
+    log.log('onCanvasClick 跳过 — 场景未就绪')
+    return
+  }
 
   const rect = renderer.domElement.getBoundingClientRect()
   const mouse = new THREE.Vector2(
@@ -336,7 +386,6 @@ function onCanvasClick(event) {
   const raycaster = new THREE.Raycaster()
   raycaster.setFromCamera(mouse, camera)
 
-  // 对 GLB 场景中所有 mesh 做射线检测
   const meshes = []
   gltfScene.traverse((child) => {
     if (child.isMesh) meshes.push(child)
@@ -344,11 +393,12 @@ function onCanvasClick(event) {
 
   const intersects = raycaster.intersectObjects(meshes, false)
   if (intersects.length > 0) {
-    // 从命中的 mesh 反向查找所属建筑
     const hitName = resolveHitBuilding(intersects[0].object)
+    log.log('3D点击', { hitName, intersectCount: intersects.length })
     if (hitName && buildingMap.has(hitName)) {
       const building = buildingMap.get(hitName)
       const zone = building.zone
+      log.log('命中建筑', { name: building.displayName, zone: zone?.id })
       emit('buildingClick', {
         name: building.name,
         displayName: building.displayName,
@@ -356,6 +406,8 @@ function onCanvasClick(event) {
         zone: zone ? { id: zone.id, name: zone.name, weather: zone.weather } : null
       })
     }
+  } else {
+    log.log('3D点击空白区域')
   }
 }
 
@@ -377,6 +429,7 @@ function resolveHitBuilding(mesh) {
 }
 
 function onLabelClick(label) {
+  log.log('标签点击', { name: label.displayName })
   const zone = getZoneByBuilding(label.name)
   emit('buildingClick', {
     name: label.name,
@@ -439,63 +492,88 @@ function assignBuildingsToZones() {
 function createZoneIndicators() {
   if (!buildingMap) return
 
-  // 计算每个分区的建筑中心点平均值
+  // 计算每个分区的建筑中心点和边界
   const zoneCenters = new Map()
+  const zoneBounds = new Map()
 
   for (const building of buildingMap.values()) {
     if (!building.zone || !building.center) continue
     const zid = building.zone.id
     if (!zoneCenters.has(zid)) {
       zoneCenters.set(zid, { sum: new THREE.Vector3(), count: 0 })
+      zoneBounds.set(zid, { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity })
     }
     zoneCenters.get(zid).sum.add(building.center)
     zoneCenters.get(zid).count++
+    const bounds = zoneBounds.get(zid)
+    bounds.minX = Math.min(bounds.minX, building.center.x)
+    bounds.maxX = Math.max(bounds.maxX, building.center.x)
+    bounds.minZ = Math.min(bounds.minZ, building.center.z)
+    bounds.maxZ = Math.max(bounds.maxZ, building.center.z)
   }
 
   for (const [zid, data] of zoneCenters) {
     const center = data.sum.divideScalar(data.count)
     const zone = getAllZones().find(z => z.id === zid)
     const color = WEATHER_COLORS[zone.weather] || 0xcccccc
+    const bounds = zoneBounds.get(zid)
+
+    // ★ 分区地面色块 — 发光边缘线框（替代实心矩形）
+    const width = Math.max(20, bounds.maxX - bounds.minX + 15)
+    const depth = Math.max(20, bounds.maxZ - bounds.minZ + 15)
+    const planeGeo = new THREE.PlaneGeometry(width, depth)
+    const edges = new THREE.EdgesGeometry(planeGeo)
+    const lineMat = new THREE.LineBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.8,
+    })
+    const wireframe = new THREE.LineSegments(edges, lineMat)
+    wireframe.rotation.x = -Math.PI / 2
+    wireframe.position.set(center.x, 0.5, center.z)
+    wireframe.name = `zone-plane-${zid}`
+    scene.add(wireframe)
+    zonePlanes.push({ zoneId: zid, mesh: wireframe, center, bounds: { width, depth } })
 
     // 光环
-    const ringGeo = new THREE.TorusGeometry(3, 0.25, 16, 32)
+    const ringGeo = new THREE.TorusGeometry(5, 0.4, 16, 32)
     const ringMat = new THREE.MeshBasicMaterial({
       color,
       transparent: true,
-      opacity: 0.3,
+      opacity: 0.5,
       depthWrite: false
     })
     const ring = new THREE.Mesh(ringGeo, ringMat)
     ring.rotation.x = -Math.PI / 2
-    ring.position.set(center.x, 0.08, center.z)
+    ring.position.set(center.x, 0.1, center.z)
     ring.name = `zone-ring-${zid}`
     scene.add(ring)
 
     // 地面光斑
-    const glowGeo = new THREE.CircleGeometry(2.5, 32)
+    const glowGeo = new THREE.CircleGeometry(4, 32)
     const glowMat = new THREE.MeshBasicMaterial({
       color,
       transparent: true,
-      opacity: 0.10,
+      opacity: 0.15,
       side: THREE.DoubleSide,
       depthWrite: false
     })
     const glow = new THREE.Mesh(glowGeo, glowMat)
     glow.rotation.x = -Math.PI / 2
-    glow.position.set(center.x, 0.05, center.z)
+    glow.position.set(center.x, 0.06, center.z)
     glow.name = `zone-glow-${zid}`
     scene.add(glow)
 
-    // ★ 点光源 —— 微弱的区域色调
-    const pointLight = new THREE.PointLight(color, 3, 40, 2)
-    pointLight.position.set(center.x, 12, center.z)
+    // 点光源
+    const pointLight = new THREE.PointLight(color, 4, 50, 2)
+    pointLight.position.set(center.x, 15, center.z)
     pointLight.name = `zone-light-${zid}`
     scene.add(pointLight)
 
-    zoneIndicators.push({ zoneId: zid, ring, glow, light: pointLight, center })
+    zoneIndicators.push({ zoneId: zid, ring, glow, light: pointLight, center, wireframe })
   }
 
-  console.log(`🌈 创建了 ${zoneIndicators.length} 个分区天气指示器（含点光源）`)
+  console.log(`🌈 创建了 ${zoneIndicators.length} 个分区天气指示器`)
 }
 
 // 更新分区天气指示器
@@ -505,9 +583,11 @@ function updateZoneIndicators() {
     const color = WEATHER_COLORS[weather] || 0xcccccc
     indicator.ring.material.color.setHex(color)
     indicator.glow.material.color.setHex(color)
+    if (indicator.wireframe) {
+      indicator.wireframe.material.color.setHex(color)
+    }
     if (indicator.light) {
       indicator.light.color.setHex(color)
-      // 晴天光源更强，雨天色温偏冷
       const intensityMap = { sunny: 5, cloudy: 3, overcast: 2, rainy: 1.5, heavy_rain: 1, thunderstorm: 0.8 }
       indicator.light.intensity = intensityMap[weather] || 10
     }
@@ -515,13 +595,20 @@ function updateZoneIndicators() {
 }
 
 function setZoneWeatherHandler(zoneId, weatherCode) {
+  log.log('setZoneWeatherHandler', { zoneId, weather: weatherCode })
   setZoneWeather(zoneId, weatherCode)
-  // 更新响应式列表
   const zone = zoneList.value.find(z => z.id === zoneId)
   if (zone) zone.weather = weatherCode
-  // 该分区独立切换天气粒子
   if (weatherSystem) weatherSystem.setZoneWeather(zoneId, weatherCode)
   updateLabelZoneInfo()
+  emit('zoneWeatherChange', { zoneId, weather: weatherCode })
+}
+
+function setAllZoneWeathers(weatherMap) {
+  log.log('setAllZoneWeathers', { zoneCount: Object.keys(weatherMap).length, weathers: weatherMap })
+  for (const [zoneId, weather] of Object.entries(weatherMap)) {
+    setZoneWeatherHandler(zoneId, weather)
+  }
 }
 
 // 刷新标签中的分区天气信息（标签颜色随分区天气变化）
@@ -540,8 +627,74 @@ function getWeatherHex(code) {
   return '#' + hex.toString(16).padStart(6, '0')
 }
 
+function getWeatherIcon(code) {
+  const icons = { sunny: '☀️', cloudy: '⛅', overcast: '☁️', rainy: '🌧️', heavy_rain: '⛈️', thunderstorm: '🌩️', snow: '❄️' }
+  return icons[code] || '⛅'
+}
+
+// 初始化分区标签
+function initZoneLabels() {
+  const labels = []
+  for (const indicator of zoneIndicators) {
+    const zone = getAllZones().find(z => z.id === indicator.zoneId)
+    if (!zone) continue
+    labels.push({
+      id: zone.id,
+      name: zone.name,
+      weather: zone.weather,
+      worldPos: indicator.center.clone(),
+      style: {}
+    })
+  }
+  visibleZoneLabels.value = labels
+}
+
+// 更新分区标签位置
+function updateZoneLabelPositions() {
+  if (!camera || !containerRef.value) return
+
+  const cw = containerRef.value.clientWidth
+  const ch = containerRef.value.clientHeight
+
+  for (const zlabel of visibleZoneLabels.value) {
+    const pos = zlabel.worldPos.clone()
+    pos.y += 10  // 分区标签更高
+    pos.project(camera)
+
+    const rawX = (pos.x * 0.5 + 0.5) * cw
+    const rawY = (-pos.y * 0.5 + 0.5) * ch
+
+    const x = Math.round(rawX)
+    const y = Math.round(rawY)
+
+    if (pos.z > 1 || x < -150 || x > cw + 150 || y < -150 || y > ch + 150) {
+      zlabel.style = { display: 'none' }
+    } else {
+      const dist = Math.round(camera.position.distanceTo(zlabel.worldPos))
+      const opacity = Math.max(0, Math.min(1, 1 - (dist - 80) / 120))
+      const scale = Math.max(0.6, Math.min(1.2, 1.2 - (dist - 60) / 180))
+
+      const lastX = zlabel._x || 0; const lastY = zlabel._y || 0
+      if (Math.abs(x - lastX) <= 2 && Math.abs(y - lastY) <= 2) continue
+      zlabel._x = x; zlabel._y = y
+
+      // 更新天气
+      zlabel.weather = getZoneWeather(zlabel.id)
+
+      zlabel.style = {
+        display: 'flex',
+        left: x + 'px',
+        top: y + 'px',
+        opacity,
+        transform: `translate(-50%, -50%) scale(${scale})`
+      }
+    }
+  }
+}
+
 // 一键切换所有分区天气
 function switchWeather(code) {
+  log.log('switchWeather', { code })
   currentWeather.value = code
   if (weatherSystem) weatherSystem.setWeather(code)
   for (const z of zoneList.value) {
@@ -565,6 +718,7 @@ function animate() {
 
   // 更新标签位置
   updateLabelPositions()
+  updateZoneLabelPositions()
 
   // 更新分区天气指示器（微弱呼吸动画）
   updateZoneIndicators()
@@ -582,13 +736,14 @@ function onResize() {
   if (!containerRef.value) return
   const w = containerRef.value.clientWidth
   const h = containerRef.value.clientHeight
+  log.log('onResize', { w, h })
   camera.aspect = w / h
   camera.updateProjectionMatrix()
   renderer.setSize(w, h)
   composer.setSize(w, h)
 }
 
-defineExpose({ switchWeather })
+defineExpose({ setZoneWeatherHandler, setAllZoneWeathers, zoneList, switchWeather })
 </script>
 
 <style scoped>
@@ -683,7 +838,7 @@ defineExpose({ switchWeather })
   gap: 3px;
   cursor: pointer;
   pointer-events: auto;
-  transition: transform 0.08s;
+  transition: left 0.1s ease-out, top 0.1s ease-out, opacity 0.2s;
 }
 
 .building-label:hover {
@@ -715,16 +870,16 @@ defineExpose({ switchWeather })
 /* ── 分区天气调试面板 ── */
 .zone-weather-panel {
   position: absolute;
-  top: 8px;
+  top: 60px;
   right: 8px;
   z-index: 30;
-  background: rgba(10, 10, 30, 0.75);
+  background: rgba(10, 10, 30, 0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
   padding: 10px 12px;
-  max-height: 70vh;
+  max-height: calc(70vh - 140px);
   overflow-y: auto;
   font-size: 11px;
 }
@@ -772,5 +927,46 @@ defineExpose({ switchWeather })
 .zone-select option {
   background: #1a1a2e;
   color: #fff;
+}
+
+/* ── 分区标签 ── */
+.zone-labels-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 15;
+}
+
+.zone-label {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  pointer-events: none;
+  transition: left 0.15s ease-out, top 0.15s ease-out, opacity 0.2s;
+}
+
+.zone-label-icon {
+  font-size: 20px;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6));
+}
+
+.zone-label-text {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(10, 10, 40, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 4px 14px;
+  border-radius: 14px;
+  white-space: nowrap;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  letter-spacing: 0.8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
 }
 </style>

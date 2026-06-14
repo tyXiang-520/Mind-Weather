@@ -1,19 +1,39 @@
 <template>
   <div class="app-root">
-    <HomePage v-if="currentTab === 'home'" />
-    <PostPage v-else-if="currentTab === 'post'" />
-    <MyPage v-else-if="currentTab === 'my'" />
+    <!-- 页面过渡区域 -->
+    <div class="view-area" :class="{ 'view-enter': viewAnimating }">
+      <!-- 首页（v-if 销毁 3D 场景以释放 GPU） -->
+      <HomePage v-if="currentView === 'home' && !isDebug" @building-click="openBuilding" @building-detail="openBuilding" />
 
-    <nav class="tab-bar">
+      <!-- 投稿页（v-show 保留表单输入状态） -->
+      <PostPage v-show="currentView === 'post'" />
+
+      <!-- 我的天气（v-if 释放资源） -->
+      <ProfilePage v-if="currentView === 'my'" @navigate="navigate" />
+
+      <!-- Sub pages (v-if 按需创建) -->
+      <BuildingPage
+        v-if="currentView === 'building'"
+        :buildingName="buildingName"
+        @back="currentView = 'home'"
+      />
+      <RegisterPage v-if="currentView === 'register'" @navigate="navigate" />
+
+      <!-- Debug page（独立路由，无 tab 栏）-->
+      <DebugPage v-if="isDebug" />
+    </div>
+
+    <!-- Tab bar（debug 模式隐藏）-->
+    <nav v-if="!isDebug" class="tab-bar">
       <button
-        :class="['tab-item', { active: currentTab === 'home' }]"
-        @click="currentTab = 'home'"
+        :class="['tab-item', { active: currentView === 'home' }]"
+        @click="switchTab('home')"
       >
         <span class="tab-icon">🏠</span>
         <span>首页</span>
       </button>
 
-      <button class="tab-item tab-post" @click="currentTab = 'post'">
+      <button class="tab-item tab-post" @click="switchTab('post')">
         <div class="post-btn">
           <span class="post-icon">+</span>
         </div>
@@ -21,8 +41,8 @@
       </button>
 
       <button
-        :class="['tab-item', { active: currentTab === 'my' }]"
-        @click="currentTab = 'my'"
+        :class="['tab-item', { active: currentView === 'my' }]"
+        @click="switchTab('my')"
       >
         <span class="tab-icon">🌤️</span>
         <span>我的天气</span>
@@ -32,12 +52,66 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { createLogger } from './utils/debug.js'
 import HomePage from './views/HomePage.vue'
 import PostPage from './views/PostPage.vue'
-import MyPage from './views/MyPage.vue'
+import ProfilePage from './views/Profile.vue'
+import BuildingPage from './views/Building.vue'
+import RegisterPage from './views/Register.vue'
+import DebugPage from './views/DebugPage.vue'
 
-const currentTab = ref('home')
+const log = createLogger('App')
+
+const currentView = ref('home')
+const buildingName = ref('')
+const isDebug = ref(false)
+const viewAnimating = ref(false)
+
+// 页面切换触发呼吸动画
+watch(currentView, () => {
+  viewAnimating.value = true
+  setTimeout(() => { viewAnimating.value = false }, 400)
+})
+
+// 检测 URL 是否为 /debug 路径
+function checkDebugRoute() {
+  log.log('checkDebugRoute', { path: window.location.pathname, hash: window.location.hash })
+  isDebug.value = window.location.pathname === '/debug' || window.location.hash === '#/debug'
+}
+
+function switchTab(tab) {
+  log.log('switchTab', { from: currentView.value, to: tab })
+  currentView.value = tab
+  buildingName.value = ''
+}
+
+function openBuilding(name) {
+  log.log('openBuilding', { name, currentView: currentView.value })
+  buildingName.value = name
+  currentView.value = 'building'
+}
+
+function navigate(view, param) {
+  log.log('navigate', { view, param, from: currentView.value })
+  if (view === 'building') {
+    buildingName.value = param
+    currentView.value = 'building'
+  } else if (view === 'home' || view === 'my' || view === 'post') {
+    currentView.value = view
+  } else {
+    currentView.value = view
+  }
+}
+
+onMounted(() => {
+  checkDebugRoute()
+  window.addEventListener('hashchange', checkDebugRoute)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('hashchange', checkDebugRoute)
+})
 </script>
 
 <style scoped>
@@ -45,6 +119,21 @@ const currentTab = ref('home')
   width: 100%;
   height: 100%;
   position: relative;
+}
+
+.view-area {
+  width: 100%;
+  height: 100%;
+  transition: opacity 0.3s ease;
+}
+
+.view-area.view-enter {
+  animation: viewFadeIn 0.4s ease;
+}
+
+@keyframes viewFadeIn {
+  0% { opacity: 0.6; transform: scale(0.98); }
+  100% { opacity: 1; transform: scale(1); }
 }
 
 .tab-bar {

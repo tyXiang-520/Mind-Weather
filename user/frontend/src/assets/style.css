@@ -22,47 +22,6 @@ html, body, #app {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Bottom tab bar */
-.tab-bar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 56px;
-  padding-bottom: var(--safe-bottom);
-  display: flex;
-  align-items: center;
-  justify-content: space-around;
-  background: rgba(10, 10, 30, 0.85);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  z-index: 100;
-}
-
-.tab-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  padding: 6px 16px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  cursor: pointer;
-  transition: color 0.2s;
-  border: none;
-  background: none;
-}
-
-.tab-item.active {
-  color: var(--accent);
-}
-
-.tab-item .tab-icon {
-  font-size: 22px;
-  line-height: 1;
-}
-
 /* Glass panel */
 .glass-panel {
   background: var(--bg-card);
@@ -71,29 +30,6 @@ html, body, #app {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   padding: 16px;
-}
-
-/* Drawer */
-.drawer {
-  position: fixed;
-  bottom: 72px;
-  left: 12px;
-  right: 12px;
-  z-index: 90;
-  transform: translateY(0);
-  transition: transform 0.3s ease;
-}
-
-.drawer.collapsed {
-  transform: translateY(calc(100% + 16px));
-}
-
-.drawer-handle {
-  width: 32px;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.3);
-  border-radius: 2px;
-  margin: 0 auto 8px;
 }
 
 /* Buttons */
@@ -157,4 +93,19 @@ input:focus, textarea:focus, select:focus {
 textarea {
   resize: none;
   min-height: 120px;
+}
+
+/* Weather icon micro-animations */
+.weather-float {
+  display: inline-block;
+  animation: weatherFloat 3s ease-in-out infinite;
+}
+
+.zw-icon, .bp-post-emoji, .summary-emoji {
+  animation: weatherFloat 3s ease-in-out infinite;
+}
+
+@keyframes weatherFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
 }

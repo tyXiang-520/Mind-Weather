@@ -4,12 +4,14 @@ import jakarta.persistence.*;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
+import org.hibernate.annotations.DynamicUpdate;
 import java.time.LocalDateTime;
 
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Entity
+@DynamicUpdate
 @Table(name = "users")
 public class User {
 
@@ -25,6 +27,14 @@ public class User {
 
     @Column(length = 100)
     private String nickname;
+
+    /** 头像 URL */
+    @Column(length = 500)
+    private String avatar;
+
+    /** 默认匿名投稿 */
+    @Column(name = "default_anonymous", nullable = false)
+    private Boolean defaultAnonymous = false;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

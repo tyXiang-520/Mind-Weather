@@ -13,14 +13,25 @@ spring:
     hibernate:
       ddl-auto: update
     show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
 
 server:
   port: 8080
 
-# DeepSeek API 配置（投稿情绪分析用）
+# AI 情绪分析配置（支持多提供商 fallback）
+# 优先级: deepseek > pollinations(免Key) > local
 mindweather:
   ai:
-    provider: deepseek
-    api-key: ${DEEPSEEK_API_KEY:your-api-key-here}
-    api-url: https://api.deepseek.com/v1/chat/completions
-    model: deepseek-chat
+    # 首选: DeepSeek (效果最好)
+    deepseek:
+      enabled: true
+      api-key: ${DEEPSEEK_API_KEY:sk-94178e5d82ce4f45bb2444f0507930ff}
+      api-url: https://api.deepseek.com/v1/chat/completions
+      model: deepseek-chat
+    # 备选: Pollinations AI (完全免费，无需API Key，限流严重)
+    pollinations:
+      enabled: true
+      api-url: https://text.pollinations.ai/openai
+      model: openai

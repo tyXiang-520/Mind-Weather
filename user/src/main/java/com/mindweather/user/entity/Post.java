@@ -45,7 +45,7 @@ public class Post {
     private String emotionType;
 
     /** 提取的关键词标签，JSON 数组字符串：["考试周","ddl"] */
-    @Column(length = 1000)
+    @Column(columnDefinition = "TEXT")
     private String tags;
 
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -53,6 +53,15 @@ public class Post {
 
     @Column(name = "is_deleted", nullable = false)
     private Boolean isDeleted = false;
+
+    /** 是否匿名投稿 */
+    @Column(name = "is_anonymous", nullable = false)
+    private Boolean isAnonymous = false;
+
+    /** 外键关联：用户 */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", insertable = false, updatable = false)
+    private User user;
 
     @PrePersist
     protected void onCreate() {
